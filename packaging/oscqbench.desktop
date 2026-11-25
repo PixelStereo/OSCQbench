@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=OSCQbench
+Comment=A device to test OSC and OSCQuery controllers on
+Exec=oscqbench
+Icon=oscqbench
+Categories=AudioVideo;Audio;Network;Development;
+Terminal=false
