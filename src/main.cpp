@@ -1,37 +1,32 @@
-// OSCQbench: a device that exists to be tested against. It generates a signal (a sine, a saw, a triangle, a square or noise), and says
-// everything about it in every kind of node the pxs-core tree has (see Device.h for the namespace), so that a controller, an explorer or a
-// mapper can be tried on all of them. The window shows the same tree, a tab for each top-level node (Panel.h).
-//
-// Run it, then explore it:  curl http://127.0.0.1:5679/   (or find "OSCQbench" on the network from any OSCQuery client).
 #include "Device.h"
-#include "Drawer.h"
-#include "GeneratorEditor.h"
-#include "Panel.h"
+#include "BenchWindow.h"
+#include "Protocol.h"
 
 #include <pxs/OscService.h>
+#include <pxs/core/osc/codec.h>
 #include <pxs/Theme.h>
-#include <Fields.h>
 
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QDoubleSpinBox>
+#include <QLabel>
 #include <QEventLoop>
-#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QLabel>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QTreeWidget>
 #include <QTimer>
-#include <QVBoxLayout>
-#include <QWidget>
 
 #include <cstdio>
 #include <algorithm>
 #include <cstring>
+#include <memory>
 
 using namespace pxs::core;
 using namespace pxs::core::tree;
@@ -40,6 +35,55 @@ namespace {
 
 // --check: the device starts, its tree is as every pxs tree must be, and its OSCQuery server answers with every top-level node. For the package
 // to be tried before it is published
+bool testPackets(Device &device)
+{
+    struct Case { const char *path, *tag, *args, *hex; };
+    static const Case cases[] = {
+        {"/a", "", "[]", "2f6100002c000000"},
+        {"/N", "N", "[null]", "2f4e00002c4e0000"},
+        {"/I", "I", "[null]", "2f4900002c490000"},
+        {"/i", "i", "[-1]", "2f6900002c690000ffffffff"},
+        {"/h", "h", R"(["1099511627776"])", "2f6800002c6800000000010000000000"},
+        {"/f", "f", "[0.5]", "2f6600002c6600003f000000"},
+        {"/d", "d", "[3.141592653589793]", "2f6400002c640000400921fb54442d18"},
+        {"/s", "s", R"(["abc"])", "2f7300002c73000061626300"},
+        {"/S", "S", R"(["sym"])", "2f5300002c53000073796d00"},
+        {"/b", "b", R"(["010203"])", "2f6200002c6200000000000301020300"},
+        {"/c", "c", R"(["A"])", "2f6300002c63000000000041"},
+        {"/m", "m", R"(["0x00903c7f"])", "2f6d00002c6d000000903c7f"},
+        {"/t", "t", R"(["0x0123456789abcdef"])", "2f7400002c7400000123456789abcdef"},
+        {"/T", "T", "[true]", "2f5400002c540000"},
+        {"/F", "F", "[false]", "2f4600002c460000"},
+        {"/r", "r", "[\"#FF8040C0\"]", "2f7200002c720000ff8040c0"},
+        {"/a", "i[ff]i", "[1,[0.25,0.75],2]", "2f6100002c695b66665d6900000000013e8000003f40000000000002"},
+    };
+    QString error;
+    for (const auto &c : cases) {
+        if (bench::packet(c.path, c.tag, c.args, error).toHex() != c.hex) {
+            std::fprintf(stderr, "OSCQbench: wrong bytes for %s: %s\n", c.tag, qPrintable(error));
+            return false;
+        }
+    }
+    const auto arrayPacket = bench::packet("/types/array", "i[ff]i", "[3,[0.5,0.125],4]", error);
+    std::vector<pxs::core::osc::Message> messages;
+    if (!pxs::core::osc::decode(reinterpret_cast<const std::uint8_t *>(arrayPacket.data()), std::size_t(arrayPacket.size()), messages)
+        || messages.size() != 1 || device.tree().apply(messages.front()) != 1) return false;
+    const auto value = device.tree().find("/types/array")->get();
+    if (value.size() != 4 || value[0].number() != 3 || value[2].number() != 0.125 || value[3].number() != 4) return false;
+    const auto &tree = device.tree();
+    for (const auto &mode : {"none", "high", "low", "both"}) {
+        const std::string path = std::string("/protocol/clip/") + mode;
+        const bool clipLow = path == "/protocol/clip/low" || path == "/protocol/clip/both";
+        const bool clipHigh = path == "/protocol/clip/high" || path == "/protocol/clip/both";
+        if (tree.apply(path, {Value(-1.0f)}) != 1 || tree.find(path)->get()[0].number() != (clipLow ? 0.0 : -1.0)) return false;
+        if (tree.apply(path, {Value(2.0f)}) != 1 || tree.find(path)->get()[0].number() != (clipHigh ? 1.0 : 2.0)) return false;
+    }
+    device.toggleProbePath();
+    if (!tree.find("/protocol/dynamic/value")) return false;
+    device.toggleProbePath();
+    return !tree.find("/protocol/dynamic/value");
+}
+
 int selfTest()
 {
     Device device;
@@ -73,8 +117,10 @@ int selfTest()
                           type->get().front().text() == "saw";
     if (!feedback) std::fprintf(stderr, "OSCQbench: an edit of the timeline was not told to the tree\n");
 
-    bool served = !body.isEmpty() && feedback;
-    for (const std::string &tab : device.tabs()) served = served && body.contains(QByteArray("\"") + tab.c_str() + "\"");
+    const bool packets = testPackets(device);
+    if (!packets) std::fprintf(stderr, "OSCQbench: packet or fixture checks failed\n");
+    bool served = !body.isEmpty() && feedback && packets;
+    for (const std::string &tab : device.sections()) served = served && body.contains(QByteArray("\"") + tab.c_str() + "\"");
     const auto root = QJsonDocument::fromJson(body).object().value("CONTENTS").toObject();
     const auto actions = root.value("actions").toObject().value("CONTENTS").toObject();
     const auto signalNodes = root.value("signals").toObject().value("CONTENTS").toObject();
@@ -91,25 +137,88 @@ int selfTest()
     return served && problems.empty() ? 0 : 1;
 }
 
+bool until(const std::function<bool()> &condition)
+{
+    QEventLoop loop;
+    QTimer tick;
+    QObject::connect(&tick, &QTimer::timeout, &loop, [&] { if (condition()) loop.quit(); });
+    tick.start(20);
+    QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+    loop.exec();
+    return condition();
+}
+
+int checkWindow()
+{
+    Device device;
+    pxs::OscService service(&device.tree(), QStringLiteral("OSCQbench window check"));
+    service.setLocalOnly(true);
+    if (!service.start(0, 0, false)) return 2;
+    BenchWindow window(device, service);
+    window.show();
+    window.resize(1000, 700);
+    auto *tree = window.findChild<QTreeWidget *>("namespace");
+    auto *panel = window.findChild<QScrollArea *>("publishedControls");
+    auto *status = window.findChild<QLabel *>("endpointStatus");
+    if (!tree || !panel || !status || window.size() != QSize(1000, 700)
+        || !until([&] { return tree->topLevelItemCount() && panel->widget() && status->text().contains("OSCQbench window check"); })) return 1;
+    const auto select = [&](const QString &path) {
+        for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+            if ((*it)->toolTip(0) != path) continue;
+            tree->setCurrentItem(*it);
+            return true;
+        }
+        return false;
+    };
+    const auto press = [&](const QString &label) {
+        for (auto *button : panel->widget()->findChildren<QPushButton *>()) {
+            if (button->text() != label) continue;
+            button->click();
+            return true;
+        }
+        return false;
+    };
+    if (!select("/protocol/clip/both")) return 1;
+    auto *value = panel->widget()->findChild<QDoubleSpinBox *>();
+    if (!value) return 1;
+    value->setValue(2);
+    if (!press("Send") || !until([&] { return device.tree().find("/protocol/clip/both")->get()[0].number() == 1.0; })) return 1;
+    if (!select("/protocol/toggle_path") || !press("Trigger")
+        || !until([&] { return device.tree().find("/protocol/dynamic/value"); })) return 1;
+    std::puts("OSCQbench window: namespace, resize, parameter write and action passed");
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
 {
-    for (int i = 1; i < argc; ++i)
-        if (std::strcmp(argv[i], "--check") == 0) { // what CI runs on the package: no window, no display needed
+    bool headlessMode = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--check") == 0) {
             QCoreApplication core(argc, argv);
             return selfTest();
         }
-    QApplication app(argc, argv);
-    QApplication::setApplicationName("OSCQbench");
-    QApplication::setApplicationVersion(QStringLiteral(OSCQBENCH_VERSION));
-    QApplication::setOrganizationName("Pixel Stereo");
-    QApplication::setOrganizationDomain("pixelstereo.fr");
-    pxs::apply(app, pxs::graphite());
-    ignoreWheelOnFields(&app);
+        if (std::strcmp(argv[i], "--check-window") == 0) {
+            QApplication app(argc, argv);
+            return checkWindow();
+        }
+        if (std::strcmp(argv[i], "--no-window") == 0) headlessMode = true;
+    }
+    std::unique_ptr<QCoreApplication> app;
+    if (headlessMode) app = std::make_unique<QCoreApplication>(argc, argv);
+    else {
+        auto gui = std::make_unique<QApplication>(argc, argv);
+        gui->setOrganizationDomain("pixelstereo.fr");
+        pxs::apply(*gui, pxs::graphite());
+        app = std::move(gui);
+    }
+    app->setApplicationName("OSCQbench");
+    app->setApplicationVersion(QStringLiteral(OSCQBENCH_VERSION));
+    app->setOrganizationName("Pixel Stereo");
 
     QCommandLineParser cli;
-    cli.setApplicationDescription("A device to test OSC and OSCQuery controllers on: a generator with every kind of node, parameter, action and signal.");
+    cli.setApplicationDescription("Inspect OSCQuery devices and exercise an OSCQuery fixture.");
     cli.addHelpOption();
     cli.addVersionOption();
     QCommandLineOption name({"n", "name"}, "The name it announces on the network.", "name", "OSCQbench");
@@ -118,8 +227,9 @@ int main(int argc, char **argv)
     QCommandLineOption local("local", "Reachable from this computer only, and not announced.");
     QCommandLineOption headless("no-window", "No window: only the device.");
     QCommandLineOption check("check", "Start, check the tree and the OSCQuery server, and exit (no window).");
-    cli.addOptions({name, oscPort, httpPort, local, headless, check});
-    cli.process(app);
+    QCommandLineOption checkWindowOption("check-window", "Check the resizable controls panel and its OSC output.");
+    cli.addOptions({name, oscPort, httpPort, local, headless, check, checkWindowOption});
+    cli.process(*app);
 
     Device device;
     for (const std::string &problem : device.tree().check()) qWarning("OSCQbench: the tree lacks something: %s", problem.c_str()); // what every pxs tree must have
@@ -131,57 +241,8 @@ int main(int argc, char **argv)
     }
     qInfo("OSCQbench: OSCQuery on http://127.0.0.1:%d/, OSC on udp %d", service.httpPort(), service.oscPort());
 
-    QWidget window;
-    QPlainTextEdit *log = new QPlainTextEdit;
-    Drawer *drawer = nullptr;
-    int observed = 0;
-    if (!cli.isSet(headless)) {
-        window.setWindowTitle("OSCQbench");
-        auto *root = new QHBoxLayout(&window);
-        root->setSizeConstraint(QLayout::SetFixedSize); // a fixed window, as wide as the drawer is open
-        root->setSpacing(0);
-
-        // The controls: the title, the tabs, what OSC brought
-        auto *left = new QVBoxLayout;
-        auto *title = new QLabel(QString("<b>%1</b> — OSCQuery http://127.0.0.1:%2/ — OSC udp %3")
-                                     .arg(cli.value(name)).arg(service.httpPort()).arg(service.oscPort()));
-        title->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        left->addWidget(title);
-        auto *controls = new Panel(device.tree(), device.tabs(), device.declared());
-        controls->addHead("generator", new GeneratorEditor(&device));
-        controls->setFixedSize(820, 640);
-        left->addWidget(controls);
-        auto *received = new QLabel("OSC received");
-        received->setObjectName("caption");
-        left->addWidget(received);
-        log->setReadOnly(true);
-        log->setMaximumBlockCount(400);
-        log->setFixedHeight(96);
-        left->addWidget(log);
-        root->addLayout(left);
-
-        // The signals, in a drawer of their own
-        auto *signalsPanel = new Panel(device.tree(), device.topLevel(), device.declared(), Panel::Mode::Signals);
-        drawer = new Drawer(signalsPanel, 380, "The signals the device emits");
-        root->addWidget(drawer);
-        // The drawer is the node "/ui/signals": the handle writes it, and a write to it (OSC) moves the drawer
-        const pxs::core::tree::Node *drawerNode = device.tree().find("/ui/signals");
-        drawer->onToggled([&device](bool open) { device.tree().apply("/ui/signals", {Value(open)}); });
-        if (drawerNode) {
-            observed = device.tree().addObserver([drawer, drawerNode](const pxs::core::tree::Node &node, const ValueList &v) {
-                if (&node == drawerNode && !v.empty() && v.front().truthy() != drawer->isOpen()) drawer->setOpen(v.front().truthy());
-            });
-            if (drawerNode->get) drawer->setOpen(drawerNode->get().front().truthy(), false);
-        }
-        window.show();
-    }
-    QObject::connect(&service, &pxs::OscService::messageReceived, log, [log](const ::osc::Message &m, int accepted) {
-        QStringList args;
-        for (const QVariant &v : m.args) args << v.toString();
-        log->appendPlainText(QString("%1 %2 %3%4").arg(m.address, m.types, args.join(' '), accepted ? "" : "  (refused)"));
-    });
-
-    const int result = app.exec();
-    if (observed) device.tree().removeObserver(observed);
-    return result;
+    if (cli.isSet(headless)) return app->exec();
+    BenchWindow window(device, service);
+    window.show();
+    return app->exec();
 }

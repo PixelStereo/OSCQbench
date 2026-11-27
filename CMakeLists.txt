@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets Network WebSockets)
 find_package(Threads REQUIRED)
 
 # pxs-qt (OSC, OSCQuery, the parameter tree, the look) is a submodule, and it carries pxs-core itself: nothing else to pin
@@ -23,10 +23,11 @@ if(APPLE)
 elseif(WIN32)
     list(APPEND OSCQBENCH_ICONS packaging/oscqbench.rc)
 endif()
-add_executable(OSCQbench WIN32 MACOSX_BUNDLE src/main.cpp src/Device.cpp src/Device.h src/Drawer.cpp src/Drawer.h src/GeneratorEditor.cpp src/GeneratorEditor.h src/Panel.cpp src/Panel.h ${OSCQBENCH_ICONS})
+add_executable(OSCQbench WIN32 MACOSX_BUNDLE src/main.cpp src/Device.cpp src/Device.h
+    src/BenchWindow.cpp src/BenchWindow.h src/Protocol.cpp src/Protocol.h ${OSCQBENCH_ICONS})
 target_include_directories(OSCQbench PRIVATE src)
 target_compile_definitions(OSCQbench PRIVATE OSCQBENCH_VERSION="${OSCQBENCH_VERSION}")
-target_link_libraries(OSCQbench PRIVATE pxs::params pxs::tree pxs::oscquery pxs::theme pxs::widgets pxs::filterview pxs::interaction pxs::timelineview Qt6::Widgets Qt6::Network)
+target_link_libraries(OSCQbench PRIVATE pxs::params pxs::tree pxs::oscquery pxs::oscclient pxs::theme pxs::interaction Qt6::Widgets Qt6::Network)
 set_target_properties(OSCQbench PROPERTIES OUTPUT_NAME "${OSCQBENCH_APP_NAME}"
     MACOSX_BUNDLE_ICON_FILE "oscqbench.icns" MACOSX_BUNDLE_GUI_IDENTIFIER "fr.pixelstereo.oscqbench" MACOSX_BUNDLE_BUNDLE_NAME "OSCQbench"
     # Our own Info.plist: macOS only lets an app use the local network (Bonjour, multicast) when it says why

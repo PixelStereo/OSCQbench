@@ -3,6 +3,7 @@
 #include <pxs/core/tree/parameter.h>
 
 #include <QDateTime>
+#include <QString>
 
 #include <algorithm>
 #include <cmath>
@@ -47,6 +48,10 @@ bool like(Value &held, const Value &incoming, const ArgRange *limits)
         held = Value(incoming.truthy());
         return true;
     }
+    if (held.is<std::int64_t>() && incoming.is<std::int64_t>() && (!limits || (!limits->min && !limits->max))) {
+        held = incoming;
+        return true;
+    }
     std::optional<double> n = incoming.number();
     if (!n) return false;
     if (limits && limits->min && limits->max)
@@ -64,7 +69,6 @@ std::size_t arity(const std::string &type) { return type == "N" || type == "I" ?
 
 Node &Device::group(const char *path, const char *label, const char *description)
 {
-    m_declared.push_back(path);
     Node &n = m_tree.add(path);
     n.label = label;
     n.description = description;
@@ -80,7 +84,6 @@ Node &Device::bound(const char *path, const char *label, CoreParameter::Type typ
     p->byDefault(Value(ref));
     p->bind([&ref] { return Value(ref); }, [&ref](const Value &v) { assign(ref, v); });
     configure(*p);
-    m_declared.push_back(path);
     return m_tree.add(path, std::move(p));
 }
 
@@ -94,7 +97,6 @@ Node &Device::stored(const char *path, const char *label, CoreParameter::Type ty
     p->byDefault(initial);
     p->bind([cell] { return *cell; }, [cell](const Value &v) { like(*cell, v, nullptr); });
     configure(*p);
-    m_declared.push_back(path);
     return m_tree.add(path, std::move(p));
 }
 
@@ -102,7 +104,6 @@ Node &Device::stored(const char *path, const char *label, CoreParameter::Type ty
 Node &Device::raw(const char *path, const char *type, const char *label, const char *description, std::vector<ArgRange> ranges, ValueList initial,
                   std::vector<std::string> extendedType)
 {
-    m_declared.push_back(path);
     Node &n = m_tree.add(path);
     n.type = type;
     n.access = 3;
@@ -129,7 +130,6 @@ void Device::action(const char *path, const char *type, const char *label, const
 {
     const std::string full = path;
     const std::size_t needed = arity(type);
-    m_declared.push_back(path);
     Node &n = m_tree.addAction(path, type, [this, full, needed, handler = std::move(handler)](const ValueList &v) {
         if (v.size() < needed) return false;
         if (handler && !handler(v)) return false;
@@ -142,7 +142,6 @@ void Device::action(const char *path, const char *type, const char *label, const
 Node &Device::signal(const char *path, const char *type, const char *label, const char *description, std::vector<ArgRange> ranges,
                      std::vector<std::string> extendedType)
 {
-    m_declared.push_back(path);
     Node &n = m_tree.addSignal(path, type, description);
     n.label = label;
     n.range = std::move(ranges);
@@ -179,7 +178,7 @@ void Device::relate(const std::string &parent, const std::vector<std::string> &c
 
 Device::Device(QObject *parent) : QObject(parent)
 {
-    m_tabs = {"generator", "values", "types", "actions", "access", "structure", "ui"};
+    m_sections = {"generator", "values", "types", "actions", "signals", "access", "structure", "protocol"};
     buildGenerator();
     buildValues();
     buildTypes();
@@ -187,7 +186,7 @@ Device::Device(QObject *parent) : QObject(parent)
     buildSignals();
     buildAccess();
     buildStructure();
-    buildUi();
+    buildProtocol();
     m_clock.start();
     connect(&m_timer, &QTimer::timeout, this, [this] { tick(); });
     m_timer.start(20); // 50 Hz
@@ -221,8 +220,7 @@ void Device::buildGenerator()
             tell(before);
         });
         configure(*p);
-        m_declared.push_back(path);
-        return m_tree.add(path, std::move(p));
+            return m_tree.add(path, std::move(p));
     };
     const auto doing = [this](AnimAction a, double time = 0) {
         control(a, time);
@@ -593,24 +591,77 @@ void Device::buildStructure()
     signal("/structure/mixed/pulse", "N", "Pulse", "A signal: an impulse, at each hit and at each loop");
 }
 
-// ---- /ui: the window's own state
-
-void Device::buildUi()
+void Device::buildProtocol()
 {
-    group("/ui", "Interface", "What the window shows: the tab and the drawer of the signals are parameters like the others, and move by OSC");
-    bound("/ui/tab", "Tab", CoreParameter::Type::Choice, s.tab, [this](CoreParameter &p) { p.choices(m_tabs); }).description =
-        "The tab of the window (the name of a top-level node). A parameter that holds actions";
-    auto move = [this](int by) {
-        const auto at = std::find(m_tabs.begin(), m_tabs.end(), s.tab);
-        const int n = int(m_tabs.size());
-        s.tab = m_tabs[std::size_t((int(at - m_tabs.begin()) + by + n) % n)];
-        m_tree.changed("/ui/tab");
+    group("/protocol", "Protocol cases");
+    group("/protocol/clip", "Clipping modes", "Each parameter has RANGE 0 to 1. Send -1 and 2, then read VALUE.");
+    for (const std::string mode : {"none", "low", "high", "both"}) {
+        const std::string path = "/protocol/clip/" + mode;
+        auto &node = raw(path.c_str(), "f", mode.c_str(), "Declared clip mode", {range(0, 1)}, {Value(0.5f)});
+        node.clip = mode;
+        auto cell = std::make_shared<float>(0.5f);
+        node.get = [cell] { return ValueList{Value(*cell)}; };
+        node.set = [cell, mode](const ValueList &arguments) {
+            if (arguments.size() != 1) return false;
+            const auto number = arguments[0].number();
+            if (!number || !std::isfinite(*number)) return false;
+            double value = *number;
+            if (mode == "low" || mode == "both") value = std::max(value, 0.0);
+            if (mode == "high" || mode == "both") value = std::min(value, 1.0);
+            *cell = float(value);
+            return true;
+        };
+    }
+    raw("/types/symbol", "S", "Symbol", "OSC alternate string tag", {{}}, {Value("symbol")}).clip.clear();
+    auto &character = raw("/types/character", "c", "Character", "One character", {{}}, {Value("A")});
+    auto letter = std::make_shared<std::string>("A");
+    character.get = [letter] { return ValueList{Value(*letter)}; };
+    character.set = [letter](const ValueList &args) {
+        if (args.size() != 1) return false;
+        const auto value = args[0].number();
+        if (!value || *value < 0 || *value > 0x10ffff) return false;
+        const char32_t codepoint = char32_t(*value);
+        *letter = QString::fromUcs4(&codepoint, 1).toStdString();
         return true;
     };
-    bound("/ui/signals", "Signals drawer", CoreParameter::Type::Bool, s.drawer, [](CoreParameter &p) { p.transient(); }).description =
-        "The drawer that shows the signals: open or closed";
-    action("/ui/tab/next", "N", "Next tab", "The tab after, round", [move](const ValueList &) { return move(1); });
-    action("/ui/tab/previous", "N", "Previous tab", "The tab before, round", [move](const ValueList &) { return move(-1); });
+    character.clip.clear();
+    raw("/types/midi", "m", "MIDI bytes", "Packed port, status, data1 and data2", {{}}, {Value(std::int64_t(0x00903c7f))}).clip.clear();
+    raw("/types/timetag", "t", "Time tag", "64-bit NTP timestamp", {{}}, {Value(std::int64_t(1))}).clip.clear();
+    raw("/types/false", "F", "False", "Explicit OSC False tag", {{}}, {Value(false)}).clip.clear();
+    ArgRange items;
+    items.items = {range(0, 1), range(0, 1)};
+    auto &array = raw("/types/array", "i[ff]i", "Array", "Nested VALUE and RANGE", {range(0, 9), items, range(0, 9)},
+        {Value(1), Value(0.25f), Value(0.75f), Value(2)});
+    array.clip.clear();
+    const auto setArray = array.set;
+    array.set = [setArray](const ValueList &v) {
+        if (v.size() == 6 && v[1].isNil() && v[4].isNil())
+            return setArray({v[0], v[2], v[3], v[5]});
+        return v.size() == 4 && setArray(v);
+    };
+    group("/protocol/dynamic", "Dynamic paths");
+    action("/protocol/toggle_path", "N", "Toggle dynamic node", "Add or remove /protocol/dynamic/value", [this](const ValueList &) {
+        toggleProbePath();
+        return true;
+    });
+    signal("/protocol/pulse", "f", "Manual signal", "Emits an incrementing float");
+    action("/protocol/emit", "N", "Emit signal", "Emit /protocol/pulse for LISTEN and IGNORE checks", [this](const ValueList &) {
+        emitProbeSignal();
+        return true;
+    });
+}
+
+void Device::toggleProbePath()
+{
+    constexpr auto path = "/protocol/dynamic/value";
+    if (m_tree.find(path)) m_tree.remove(path);
+    else stored(path, "Dynamic value", CoreParameter::Type::Float, Value(0.5f), [](CoreParameter &p) { p.range(0, 1); });
+}
+
+void Device::emitProbeSignal()
+{
+    m_probePulse += 1;
+    m_tree.fire("/protocol/pulse", {Value(m_probePulse)});
 }
 
 // ---- the generator itself
@@ -656,5 +707,4 @@ void Device::tick()
         s.above = above;
         m_tree.fire("/generator/signals/wave/above", {Value(above)});
     }
-    if (m_ticked) m_ticked();
 }
