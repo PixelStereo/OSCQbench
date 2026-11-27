@@ -54,3 +54,14 @@ the actions `/ui/tab/next` and `/ui/tab/previous`, and `/ui/signals` (`T`: the d
 | **Interface** | `/ui/tab`, `/ui/signals` | the window's own tab (with the actions `next` and `previous` that it holds), and the drawer of the signals |
 
 Every numeric parameter says its range and default (a reset is writing `DEFAULT_VALUE`); the tree is checked at start (`Tree::check()`), and `--check` fails when it lacks something.
+
+### Checking Kadran
+
+Add `/actions/none` (Nil) and `/actions/infinitum` (Infinitum) to a Kadran
+page as momentary buttons. The `/signals/infinitum` node is read-only and
+flashes in OSCQbench when the Infinitum action fires. `/types/rgba` exposes a
+packed OSC `r` value with alpha.
+
+For automated wire checks, Kadran's `oscqbench` CTest uses an independent
+Python OSCQuery fixture and the published pxs-core golden vectors. It checks
+the exact UDP packets and exercises WebSocket updates and changing paths.

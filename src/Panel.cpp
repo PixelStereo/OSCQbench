@@ -409,6 +409,19 @@ QWidget *Panel::editorFor(const Node &node)
             const QSignalBlocker block(combo);
             combo->setCurrentIndex(std::max(0, combo->findData(fromStd(v.empty() ? std::string() : v.front().text()))));
         });
+    } else if (node.type == "r") {
+        auto *picker = new ColorPicker(true);
+        QObject::connect(picker, &ColorPicker::colorEdited, picker, [this, self](const QColor &c) {
+            const auto rgba = (std::uint32_t(c.red()) << 24) | (std::uint32_t(c.green()) << 16)
+                              | (std::uint32_t(c.blue()) << 8) | std::uint32_t(c.alpha());
+            send(*self, {Value(std::int64_t(rgba))});
+        });
+        row->addWidget(picker);
+        shows.push_back([picker](const ValueList &v) {
+            if (v.empty()) return;
+            const auto rgba = std::uint32_t(v.front().number().value_or(0));
+            picker->setColor(QColor(int(rgba >> 24), int((rgba >> 16) & 255), int((rgba >> 8) & 255), int(rgba & 255)));
+        });
     } else if (isColor(node)) { // a colour: the picker of pxs-qt
         auto *picker = new ColorPicker(node.type == "ffff");
         const bool alpha = node.type == "ffff";
@@ -469,7 +482,7 @@ QWidget *Panel::actionFor(const Node &node)
     row->setContentsMargins(0, 0, 0, 0);
     const Node *self = &node;
     auto arguments = std::make_shared<ValueList>();
-    const std::size_t count = node.type == "N" ? 0 : node.type.size();
+    const std::size_t count = node.type == "N" || node.type == "I" ? 0 : node.type.size();
     arguments->resize(count);
     for (std::size_t i = 0; i < count; ++i) {
         const char tag = node.type[i];
@@ -502,7 +515,7 @@ QWidget *Panel::viewFor(const Node &node)
     const bool bounded = range && range->min && range->max;
     QWidget *widget = nullptr;
     Show show;
-    if (type == "N") { // an impulse: a lamp that stays lit a moment
+    if (type == "N" || type == "I") { // an impulse: a lamp that stays lit a moment
         auto *lamp = new QLabel(QString::fromUtf8("○"));
         auto *off = new QTimer(lamp);
         off->setSingleShot(true);

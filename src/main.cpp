@@ -17,6 +17,9 @@
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -72,6 +75,18 @@ int selfTest()
 
     bool served = !body.isEmpty() && feedback;
     for (const std::string &tab : device.tabs()) served = served && body.contains(QByteArray("\"") + tab.c_str() + "\"");
+    const auto root = QJsonDocument::fromJson(body).object().value("CONTENTS").toObject();
+    const auto actions = root.value("actions").toObject().value("CONTENTS").toObject();
+    const auto signalNodes = root.value("signals").toObject().value("CONTENTS").toObject();
+    const auto rgba = root.value("types").toObject().value("CONTENTS").toObject().value("rgba").toObject();
+    const auto nil = actions.value("none").toObject();
+    const auto infinitum = actions.value("infinitum").toObject();
+    const auto impulse = signalNodes.value("infinitum").toObject();
+    served = served && nil.value("TYPE") == QStringLiteral("N") && nil.value("ACCESS").toInt() == 2
+             && infinitum.value("TYPE") == QStringLiteral("I") && infinitum.value("ACCESS").toInt() == 2
+             && impulse.value("TYPE") == QStringLiteral("I") && impulse.value("ACCESS").toInt() == 1
+             && rgba.value("TYPE") == QStringLiteral("r")
+             && rgba.value("VALUE").toArray().at(0).toString().compare(QStringLiteral("#FF8040C0"), Qt::CaseInsensitive) == 0;
     std::puts(served && problems.empty() ? "OSCQbench: ok" : "OSCQbench: the tree or the server is not what it must be");
     return served && problems.empty() ? 0 : 1;
 }

@@ -33,6 +33,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+      - run: git submodule foreach --recursive "git describe --exact-match --tags HEAD"
       - uses: jurplel/install-qt-action@v4
         with:
           version: ${{ matrix.qt }}

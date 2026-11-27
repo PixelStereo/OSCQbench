@@ -58,7 +58,7 @@ bool like(Value &held, const Value &incoming, const ArgRange *limits)
     return true;
 }
 
-std::size_t arity(const std::string &type) { return type == "N" ? 0 : type.size(); }
+std::size_t arity(const std::string &type) { return type == "N" || type == "I" ? 0 : type.size(); }
 
 } // namespace
 
@@ -484,6 +484,7 @@ void Device::buildTypes()
     stored("/types/text", "Text", CoreParameter::Type::Text, Value("hello"), [](CoreParameter &) {}).description = "s: a string";
     raw("/types/double", "d", "Double", "d: a double", {range(-10, 10)}, {Value(3.141592653589793)});
     raw("/types/int64", "h", "64-bit number", "h: a 64-bit whole number", {range(0, 9e15)}, {Value(std::int64_t(1234567890123))});
+    raw("/types/rgba", "r", "Packed RGBA", "r: four RGBA bytes", {ArgRange{}}, {Value(std::int64_t(0xff8040c0))});
     raw("/types/blob", "b", "Blob", "b: bytes (shown in hexadecimal)", {ArgRange{}}, {Value(Blob{0xde, 0xad, 0xbe, 0xef})});
 }
 
@@ -492,7 +493,11 @@ void Device::buildTypes()
 void Device::buildActions()
 {
     group("/actions", "Actions", "Nodes that are only actions: they hold no value and do something when they are received. The last one is told on /signals");
-    action("/actions/none", "N", "No value", "N: nothing is sent, nothing is kept", nullptr);
+    action("/actions/none", "N", "Nil", "N: a tag with no payload", nullptr);
+    action("/actions/infinitum", "I", "Infinitum", "I: a tag with no payload", [this](const ValueList &) {
+        m_tree.fire("/signals/infinitum");
+        return true;
+    });
     action("/actions/float", "f", "Float", "f: one number", nullptr);
     action("/actions/int", "i", "Whole number", "i: one whole number", nullptr);
     action("/actions/text", "s", "Text", "s: one text", nullptr);
@@ -530,6 +535,7 @@ void Device::buildActions()
 void Device::buildSignals()
 {
     group("/signals", "Signals", "Nodes that are only signals, of the kinds the generator does not need: the device emits them, nobody writes them");
+    signal("/signals/infinitum", "I", "Infinitum", "Read-only impulse emitted by /actions/infinitum");
     signal("/signals/xy", "ff", "Waveform and opposite", "ff: two numbers that move together", {range(0, 1), range(0, 1)});
     signal("/signals/rgb", "fff", "Color", "fff: a colour that follows the waveform", {range(0, 1), range(0, 1), range(0, 1)},
            {"color.rgb.r", "color.rgb.g", "color.rgb.b"});
