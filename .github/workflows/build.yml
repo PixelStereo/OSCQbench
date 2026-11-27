@@ -33,7 +33,9 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
-      - run: git submodule foreach --recursive "git describe --exact-match --tags HEAD"
+      - name: Verify submodule release tags
+        shell: bash
+        run: git submodule foreach --recursive 'git tag --points-at HEAD | grep -Ex "v?[0-9]+[.][0-9]+[.][0-9]+"'
       - uses: jurplel/install-qt-action@v4
         with:
           version: ${{ matrix.qt }}
